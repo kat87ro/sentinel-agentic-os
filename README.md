@@ -10,6 +10,19 @@
 
 # Sentinel Agentic OS 🛰
 
+> ## ⚠️ Cost warning — read before you run it
+> Sentinel runs autonomous agents on **your own AI-provider API keys**. A 15-second
+> heartbeat, scheduled jobs, and multi-agent delegation can consume tokens **with
+> no one watching**. The built-in budgets are **estimate-based guardrails, not a
+> hard financial cap** — concurrent or automated activity can overshoot before
+> enforcement. **You are responsible for all token usage and charges.**
+>
+> **Before running:** set hard spending limits and billing alerts **on your
+> provider's side** (OpenAI/Anthropic/Google/etc.), start with cheap or local
+> models, and don't leave it running unattended until you trust your configuration.
+> See [DISCLAIMER.md](DISCLAIMER.md). This is **AGPLv3 software provided “as is,”
+> with no warranty.**
+
 **A locally-hosted operating system for AI agents.** One dashboard, one memory
 layer, one scheduler — coordinating Claude, Codex, Gemini, opencode, and Hermes
 into a self-running multi-agent platform. FastAPI backend + a dependency-free
