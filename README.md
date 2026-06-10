@@ -6,6 +6,8 @@
   <img src="https://img.shields.io/badge/engines-5-orange.svg" alt="5 Engines"/>
   <img src="https://img.shields.io/badge/dashboard%20pages-25-purple.svg" alt="25 Pages"/>
   <br/><br/>
+  <strong>⭐ Enjoying Sentinel? A star would genuinely make my day — and helps others discover it. Thank you! 🙏</strong>
+  <br/><br/>
 </div>
 
 # Sentinel Agentic OS 🛰
