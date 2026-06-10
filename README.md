@@ -217,14 +217,41 @@ accepted by-design behaviours under this threat model.
 
 ## 🚀 Quick start
 
+**Prerequisites:** Python 3.10+ and `git`. (Provider CLIs/keys are optional — you
+can explore the whole dashboard first and wire engines up later.)
+
+### Clone & install
+
 ```bash
-./install.sh
-./start.sh                       # → http://127.0.0.1:8080
-# complete the Setup Wizard in the browser to create the first admin
+# 1. Clone the repository
+git clone https://github.com/kat87ro/sentinel-agentic-os.git
+cd sentinel-agentic-os
+
+# 2. Create and activate a virtual environment (recommended)
+python3 -m venv .venv
+source .venv/bin/activate                # Windows: .venv\Scripts\activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+#   …or use the helper, which also checks Python and creates runtime dirs:
+#   ./install.sh
+
+# 4. Start the server
+./start.sh                               # → http://127.0.0.1:8080
+#   …or directly:  python3 server.py --port 8080
+
+# 5. Open http://127.0.0.1:8080 and complete the Setup Wizard
+#    (creates the first admin; the encryption key is generated on first run)
+
+# Stop the server when you're done
+./stop.sh
 ```
 
-Full instructions, prerequisites, provider setup, and network-exposure guidance
-are in **[INSTALL.md](INSTALL.md)**.
+> First launch starts in **setup mode** (no users yet) and shows the Setup Wizard.
+> After you create the admin, authentication is active on every `/api/*` route.
+
+Full prerequisites, provider-engine setup, network-exposure guidance, and
+troubleshooting are in **[INSTALL.md](INSTALL.md)**.
 
 ---
 
