@@ -1,0 +1,27 @@
+__pycache__/
+*.pyc
+.env
+*.egg-info/
+dist/
+node_modules/
+.DS_Store
+*.tar.gz
+.pytest_cache/
+.venv/
+
+# Runtime state, secrets, and PII — never commit. Blanket-ignore the whole
+# data dir (settings, users, secrets, master key, chat, inbox, projects, teams,
+# goals, kanban, plugins, mcp, usage, schedules, …), the audit log, and backup
+# archives. A per-file allow-list kept missing newly-added stores, so ignore
+# the directory and keep only structural markers.
+data/
+audit/
+backups/
+
+# Memory vault may hold private notes/journal; keep only the shipped seed files
+brain/journal/
+brain/projects/
+brain/agents/
+
+# keep directory structure
+!**/.gitkeep

@@ -1,0 +1,7 @@
+{
+  "name": "gemini-extension",
+  "version": "1.0.0",
+  "description": "Gemini CLI extension for Agentic OS",
+  "model": "gemini-2.5-flash",
+  "capabilities": ["web_search", "multi_modal", "data_analysis", "document_understanding"]
+}

@@ -1,0 +1,17 @@
+---
+title: Recent Decisions
+tags: [decisions, log]
+created: 2026-06-09
+---
+
+# Recent Decisions
+
+## 2026-05-17
+- Created Agentic OS project structure
+- 3-agent architecture: opencode (code) + Hermes (memory/channels) + Gemini CLI (research)
+- Web dashboard only (no CLI dashboard) — FastAPI + vanilla JS SPA
+- Maximum breadth skill set (all-in: DevOps, content, research, coding, productivity)
+- Git auto-versioning enabled for brain/ and skills/
+
+## Related
+[[active-projects]] · [[business-brain]]

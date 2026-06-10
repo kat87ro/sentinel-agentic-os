@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sentinel Agentic OS</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div id="topLoadingBar"></div>
+  <nav id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <div class="logo" onclick="navigate('dashboard')" style="cursor:pointer" title="Go to Dashboard">
+        <svg class="logo-svg" viewBox="0 0 36 36" width="30" height="30">
+          <defs><linearGradient id="lg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#3a8ad8"/><stop offset="100%" stop-color="#9b6ad8"/></linearGradient></defs>
+          <rect x="3" y="3" width="30" height="30" rx="8" fill="url(#lg)"/>
+          <path d="M18 9l2.4 5.6L26 17l-5.6 2.4L18 25l-2.4-5.6L10 17l5.6-2.4L18 9z" fill="#10151c"/>
+        </svg>
+        <span class="logo-text">Sentinel Agentic</span>
+      </div>
+      <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">
+        <svg viewBox="0 0 24 24" width="18" height="18" class="toggle-icon">
+          <path d="M15 18l-6-6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+    <div class="sidebar-nav">
+      <div class="sidebar-section"><div class="sidebar-section-label">Main</div></div>
+      <a href="#dashboard" class="nav-item active" data-page="dashboard"><span class="nav-icon">MC</span><span class="nav-label">Dashboard</span></a>
+      <a href="#chat" class="nav-item" data-page="chat"><span class="nav-icon">AC</span><span class="nav-label">AI Chat</span></a>
+      <div class="sidebar-section"><div class="sidebar-section-label">Projects</div></div>
+      <a href="#projects" class="nav-item" data-page="projects"><span class="nav-icon">PJ</span><span class="nav-label">Projects</span></a>
+      <a href="#inbox" class="nav-item" data-page="inbox"><span class="nav-icon">IN</span><span class="nav-label">Inbox</span><span class="nav-badge" id="inboxCount" style="display:none">0</span></a>
+      <a href="#teams" class="nav-item" data-page="teams"><span class="nav-icon">TE</span><span class="nav-label">Teams</span></a>
+      <a href="#goals" class="nav-item" data-page="goals"><span class="nav-icon">GO</span><span class="nav-label">Goals</span></a>
+      <a href="#kanban" class="nav-item" data-page="kanban"><span class="nav-icon">KB</span><span class="nav-label">Kanban Board</span></a>
+      <a href="#journal" class="nav-item" data-page="journal"><span class="nav-icon">JO</span><span class="nav-label">Journal</span></a>
+      <div class="sidebar-section"><div class="sidebar-section-label">Automation</div></div>
+      <a href="#scheduler" class="nav-item" data-page="scheduler"><span class="nav-icon">SC</span><span class="nav-label">Scheduler</span></a>
+      <a href="#smart-router" class="nav-item" data-page="smart-router"><span class="nav-icon">SR</span><span class="nav-label">Smart Router</span></a>
+      <a href="#memory" class="nav-item" data-page="memory"><span class="nav-icon">ME</span><span class="nav-label">Memory</span></a>
+      <div class="sidebar-section"><div class="sidebar-section-label">Monitoring</div></div>
+      <a href="#agent-health" class="nav-item" data-page="agent-health"><span class="nav-icon">AH</span><span class="nav-label">Agent Health</span></a>
+      <a href="#audit" class="nav-item" data-page="audit"><span class="nav-icon">AU</span><span class="nav-label">Audit</span></a>
+      <a href="#learning-analytics" class="nav-item" data-page="learning-analytics"><span class="nav-icon">LA</span><span class="nav-label">Learning Analytics</span></a>
+      <a href="#cost" class="nav-item" data-page="cost"><span class="nav-icon">CA</span><span class="nav-label">Cost Analytics</span></a>
+      <div class="sidebar-section"><div class="sidebar-section-label">System</div></div>
+      <a href="#agents" class="nav-item" data-page="agents"><span class="nav-icon">AG</span><span class="nav-label">Agents</span></a>
+      <a href="#skills" class="nav-item" data-page="skills"><span class="nav-icon">SK</span><span class="nav-label">Skills</span><span class="nav-badge" id="skillCount">0</span></a>
+      <a href="#mcp" class="nav-item" data-page="mcp"><span class="nav-icon">MS</span><span class="nav-label">MCP Servers</span></a>
+      <a href="#providers" class="nav-item" data-page="providers"><span class="nav-icon">PV</span><span class="nav-label">Providers</span></a>
+      <a href="#plugins" class="nav-item" data-page="plugins"><span class="nav-icon">PL</span><span class="nav-label">Plugins</span></a>
+      <a href="#backups" class="nav-item" data-page="backups"><span class="nav-icon">BA</span><span class="nav-label">Backups</span></a>
+      <a href="#users" class="nav-item" data-page="users"><span class="nav-icon">US</span><span class="nav-label">Users</span></a>
+      <a href="#danger-zone" class="nav-item nav-danger" data-page="danger-zone"><span class="nav-icon">!</span><span class="nav-label">Danger Zone</span></a>
+      <!-- Prompts & Standards deactivated (pages kept; reachable via #prompts / #standards) -->
+    </div>
+    <div class="sidebar-footer">
+      <div class="agent-status-bar" id="agentStatusBar">
+        <div class="agent-dot offline"></div>
+        <span class="agent-status-text">Connecting...</span>
+      </div>
+      <button class="theme-btn" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></button>
+    </div>
+  </nav>
+
+  <main class="main-content">
+    <div class="topbar">
+      <div class="topbar-left">
+        <span class="topbar-title" id="pageTitle">Dashboard</span>
+        <span class="topbar-breadcrumb" id="pageBreadcrumb">Overview</span>
+      </div>
+      <div class="topbar-right">
+        <div class="topbar-search">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+          <input type="text" placeholder="Search skills…" id="globalSearch" oninput="handleGlobalSearch(this.value)">
+          <span class="kbd">⌘K</span>
+        </div>
+        <span class="topbar-clock tnum" id="topbarClock"></span>
+        <span class="status-pill pill-ok" id="topbarStatusPill" style="display:none"><span class="dot ok"></span><span id="topbarStatusText">all systems go</span></span>
+      </div>
+    </div>
+    <div id="pageContent" class="page-content">
+      <div class="loading"><div class="loading-spinner"></div><span>Loading Sentinel Agentic OS...</span></div>
+    </div>
+  </main>
+
+  <div id="toastContainer" class="toast-container"></div>
+  <div id="modalContainer"></div>
+
+  <script src="utils.js"></script>
+  <script src="api.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
