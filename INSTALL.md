@@ -181,7 +181,7 @@ docs/                RUNBOOK (operations & disaster recovery)
 data/ audit/ backups/   empty runtime dirs (generated on first run)
 install.sh start.sh stop.sh backup.sh restore.sh   helper scripts
 requirements.txt README.md                         deps + overview
-LICENSE.md (AGPLv3) NOTICE.md TRADEMARK.md CONTRIBUTING.md DISCLAIMER.md   legal/governance
+LICENSE.md (AGPLv3) NOTICE.md CONTRIBUTING.md DISCLAIMER.md   legal/governance
 ```
 
 `data/`, `audit/`, `backups/`, and the personal layers of `brain/` are

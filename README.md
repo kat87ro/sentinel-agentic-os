@@ -280,10 +280,9 @@ a modified version as a network service, you must make your modified source
 available to its users. See [NOTICE.md](NOTICE.md) for attribution and
 [CONTRIBUTING.md](CONTRIBUTING.md) — a CLA is required to contribute.
 
-The **name and logo are trademarks** and are not covered by the code license — see
-[TRADEMARK.md](TRADEMARK.md) (forks must rebrand). A separate **commercial edition**
-is offered under proprietary terms; for commercial licensing, hosted, or enterprise
-use, contact **catalin.adrian.tudor@gmail.com**.
+A separate **commercial edition** is offered under proprietary terms; for
+commercial licensing, hosted, or enterprise use, contact
+**catalin.adrian.tudor@gmail.com**.
 
 > ⚠️ **Cost disclaimer:** the Software runs on **your** AI-provider keys and the
 > author is **not responsible for any token usage, bursts, or charges** it incurs
