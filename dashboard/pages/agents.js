@@ -90,6 +90,7 @@ async function renderAgents() {
                 <div class="card-title" style="margin:0">${escapeHtml(a.name)}</div>
                 <span class="provider-badge provider-${a.provider}">${m.label}${a.model ? ` · ${escapeHtml(a.model)}` : ''}</span>
                 ${a.source === 'claude-global' ? '<span class="badge badge-accent" style="margin-left:4px">claude-global</span>' : ''}
+                ${a.always_awake ? `<span class="badge badge-warning" style="margin-left:4px" title="Processes its queue every tick, ignoring the heartbeat interval">${icon('zap', 10)} always awake</span>` : ''}
               </div>
             </div>
           </div>
@@ -168,6 +169,12 @@ function showAgentModal(agentId) {
         ${[[0, 'Manual wake only'], [60, 'Every minute'], [300, 'Every 5 minutes'], [900, 'Every 15 minutes'], [3600, 'Every hour']]
           .map(([v, l]) => `<option value="${v}" ${a ? (a.heartbeat_seconds ?? 300) === v ? 'selected' : '' : v === 300 ? 'selected' : ''}>${l}</option>`).join('')}
       </select>
+    </div>
+    <div class="form-group">
+      <label class="check-chip" style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="agentAlwaysAwake" ${a && a.always_awake ? 'checked' : ''}>
+        <span>Always awake <span class="text-muted text-xs">— drains its queue every tick, ignoring the heartbeat interval above (continuous; spends tokens whenever it has work)</span></span>
+      </label>
     </div>
     <div class="form-group">
       <label class="form-label">Attach MCP servers</label>
@@ -252,6 +259,7 @@ async function saveAgent(agentId) {
     budget_usd: parseFloat(document.getElementById('agentBudget').value) || 0,
     budget_period: document.getElementById('agentBudgetPeriod').value,
     heartbeat_seconds: parseInt(document.getElementById('agentHeartbeat').value, 10) || 0,
+    always_awake: document.getElementById('agentAlwaysAwake').checked,
   };
   try {
     if (agentId) {

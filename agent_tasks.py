@@ -258,6 +258,7 @@ def runtime_view(path: Path, agents: list, now: float = None) -> dict:
     for a in agents:
         aid = a.get("id")
         rt = data.get("runtime", {}).get(aid, {})
+        always = bool(a.get("always_awake"))
         hb = heartbeat_of(a)
         queued = queued_counts.get(aid, 0)
         state = rt.get("state", "sleeping")
@@ -265,6 +266,12 @@ def runtime_view(path: Path, agents: list, now: float = None) -> dict:
         if state != "working":
             if waiting_counts.get(aid):
                 state = "waiting_input"
+            elif queued and always:
+                # continuous: drains on the next tick, no interval countdown —
+                # must match due_agent_ids so the monitor doesn't claim "next
+                # wake in 5 min" for an agent that actually runs every ~15s.
+                next_wake = 0
+                state = "sleeping"
             elif queued and hb > 0:
                 next_wake = max(0, int(rt.get("last_wake", 0) + hb - now))
                 state = "sleeping"
@@ -273,6 +280,7 @@ def runtime_view(path: Path, agents: list, now: float = None) -> dict:
         out[aid] = {"state": state, "queued": queued,
                     "waiting_input": waiting_counts.get(aid, 0),
                     "heartbeat_seconds": hb,
+                    "always_awake": always,
                     "next_wake_in": next_wake,
                     "last_wake": rt.get("last_wake")}
     return out
@@ -289,16 +297,21 @@ def due_agent_ids(path: Path, agents: list, now: float = None) -> list:
         aid = a.get("id")
         if aid not in queued:
             continue
+        # "always_awake" agents ignore the heartbeat interval entirely: they are
+        # due on every tick they have queued work (and aren't already draining),
+        # i.e. continuous processing. Overrides heartbeat 0 (manual-only) too.
+        always = bool(a.get("always_awake"))
         hb = heartbeat_of(a)
-        if hb <= 0:
+        if hb <= 0 and not always:
             continue
         rt = data.get("runtime", {}).get(aid, {})
         if rt.get("state") == "working":
             # crash/hang safety: a wake can't legitimately run this long —
-            # treat it as stranded and let the agent wake again
+            # treat it as stranded and let the agent wake again. The "working"
+            # guard also stops an always_awake agent from double-draining.
             if now - rt.get("last_wake", 0) < STALE_WORKING_SECONDS:
                 continue
-        if now - rt.get("last_wake", 0) >= hb:
+        if always or now - rt.get("last_wake", 0) >= hb:
             due.append(aid)
     return due
 
@@ -324,6 +337,53 @@ def recover(path: Path) -> dict:
         if requeued or released:
             save_store(path, data)
         return {"requeued": requeued, "released": released}
+
+
+def sweep_stranded(path: Path, live_task_ids: set, live_agent_ids: set,
+                   grace_seconds: int = 120, now: float = None) -> dict:
+    """LIVE crash/hang recovery (run every heartbeat tick, no restart needed).
+
+    An agent stuck in "working" whose drain produced NO live subprocess is
+    stranded — its worker thread/subprocess died or detached without finalizing
+    the task (e.g. the server was restarted mid-run, leaving orphaned children).
+    Unlike recover() (boot-time, REQUEUES so a clean restart resumes work), the
+    live sweep FAILS the orphaned running tasks and frees the agent: there is no
+    safe way to know how far a vanished worker got, and silently re-running it
+    would risk surprise token spend / double execution. Liveness is judged by
+    proc_registry presence (a real drain always has a registered process), with
+    a short grace window so a just-started drain — working set, CLI not spawned
+    yet — is never swept mid-launch.
+
+    Returns {"failed": [task_id...], "freed": [agent_id...]}.
+    """
+    now = now if now is not None else time.time()
+    with _store_lock:
+        if not path.exists():
+            return {"failed": [], "freed": []}
+        data = load_store(path)
+        failed, freed = [], []
+        for aid, rt in data.get("runtime", {}).items():
+            if rt.get("state") != "working":
+                continue
+            if aid in live_agent_ids:                          # a live session exists → legit
+                continue
+            if now - rt.get("last_wake", 0) < grace_seconds:   # just launched → don't race it
+                continue
+            running = [t for t in data.get("tasks", [])
+                       if t.get("agent_id") == aid and t.get("status") == "running"]
+            if any(t.get("id") in live_task_ids for t in running):
+                continue                                       # something IS live → leave alone
+            for t in running:
+                t["status"] = "failed"
+                t["result"] = ("stranded — the worker exited without finishing "
+                               "(auto-released by the live stale sweep)")
+                t["updated_ts"] = now
+                failed.append(t["id"])
+            rt["state"] = "sleeping"
+            freed.append(aid)
+        if failed or freed:
+            save_store(path, data)
+        return {"failed": failed, "freed": freed}
 
 
 def parse_delegations(result: str) -> list:

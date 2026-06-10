@@ -55,13 +55,14 @@ async function replyInboxUI(id) {
   const message = (input.value || '').trim();
   if (!message) { showToast('Type an answer first', 'warning'); return; }
   const out = document.getElementById(`replyResult_${id}`);
-  out.innerHTML = `<div class="loading" style="padding:14px"><div class="loading-spinner"></div><span>Re-dispatching to the agent…</span></div>`;
+  out.innerHTML = `<div class="text-xs" style="margin-top:8px;color:var(--text-faint)">sending…</div>`;
   try {
     const r = await api.replyInbox(id, message);
-    out.innerHTML = `<pre style="margin-top:10px;max-height:260px;overflow:auto;white-space:pre-wrap">${escapeHtml(r.result || '(no output)')}</pre>`;
-    showToast('Answered — agent continued the task', 'success');
+    // The agent now runs in the BACKGROUND — don't block on it. The item leaves
+    // the waiting queue; watch the linked task on the Kanban / project queue.
+    showToast(`Answer sent — ${escapeHtml(r.agent?.name || 'the agent')} is continuing in the background`, 'success');
     updateInboxBadge();
-    setTimeout(renderInbox, 1800);
+    renderInbox();
   } catch (err) {
     out.innerHTML = `<div style="color:var(--crit);font-size:12.5px;margin-top:8px">${escapeHtml(err.message)}</div>`;
   }

@@ -164,6 +164,7 @@ class CustomAgentCreate(BaseModel):
     budget_usd: float = 0          # 0 = unlimited
     budget_period: str = "day"     # hour | day | month
     heartbeat_seconds: int = 300   # wake interval to check the queue; 0 = manual-wake only
+    always_awake: bool = False     # true → drain on every tick, ignoring the heartbeat interval
 
 class CustomAgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -175,6 +176,7 @@ class CustomAgentUpdate(BaseModel):
     budget_usd: Optional[float] = None
     budget_period: Optional[str] = None
     heartbeat_seconds: Optional[int] = None
+    always_awake: Optional[bool] = None
 
 class HierarchyNode(BaseModel):
     agent_id: str
@@ -1985,9 +1987,10 @@ def scan_for_needs_input(agent: dict, message: str, result: str,
         "status": "waiting",
         "created": get_timestamp(),
     }
-    box = load_inbox()
-    box.setdefault("items", []).append(item)
-    save_inbox(box)
+    with jsonstore.lock_for(INBOX_FILE):   # concurrent appends: drain thread + reply followup + requests
+        box = load_inbox()
+        box.setdefault("items", []).append(item)
+        save_inbox(box)
     append_audit({"action": "inbox_item_created", "agent_id": item["agent_id"], "id": item["id"]})
     return item
 
@@ -2122,6 +2125,34 @@ def _mirror_kanban(task: dict):
         card["result"] = task["result"]
     card["updated"] = get_timestamp()
     save_kanban_task(card)
+
+
+def _reconcile_kanban_mirrors():
+    """Force every agent-task-linked Kanban card to reflect its task's status.
+
+    Heals card↔task drift from any cause — a missed mirror write, crash
+    recovery, or a manual drag of a machine-owned card — within one heartbeat.
+    Only cards that mirror an agent task (the task carries its ``kanban_id``)
+    are reconciled; free-standing cards created on the board stay user-owned."""
+    try:
+        for t in agent_tasks.tasks_for(AGENT_TASKS_FILE):
+            kid = t.get("kanban_id")
+            if not kid:
+                continue
+            f = KANBAN_DIR / f"{kid}.json"
+            if not f.exists():
+                continue
+            try:
+                card = json.loads(f.read_text())
+            except Exception:
+                continue
+            want = agent_tasks.KANBAN_MIRROR.get(t.get("status"), "todo")
+            if card.get("status") != want:
+                card["status"] = want
+                card["updated"] = get_timestamp()
+                save_kanban_task(card)
+    except Exception:
+        pass
 
 
 def queue_agent_task(agent: dict, title: str, message: str, project_id: str = None,
@@ -2345,6 +2376,25 @@ def _heartbeat_tick():
                 _fire_schedule(sched)
             except Exception:
                 pass
+        # Live crash/hang recovery: free agents stuck "working" whose worker
+        # vanished (no live process), then heal any Kanban card↔task drift.
+        # Runs every tick so a dead/orphaned worker self-recovers WITHOUT a
+        # restart (boot-only recover() can't catch a strand on a live server).
+        try:
+            live = proc_registry.list_active()
+            live_task_ids = {s.get("task_id") for s in live if s.get("task_id")}
+            live_agent_ids = {s.get("agent_id") for s in live if s.get("agent_id")}
+            swept = agent_tasks.sweep_stranded(AGENT_TASKS_FILE, live_task_ids, live_agent_ids)
+            if swept["failed"] or swept["freed"]:
+                for tid in swept["failed"]:
+                    t = next((x for x in agent_tasks.tasks_for(AGENT_TASKS_FILE) if x["id"] == tid), None)
+                    if t:
+                        _mirror_kanban(t)
+                append_audit({"action": "stranded_swept", **swept})
+            _reconcile_kanban_mirrors()
+        except Exception:
+            pass
+
         agents = load_agents_registry().get("agents", [])
         # Drain each due agent on its OWN daemon thread so a slow/hung provider
         # CLI can't block sibling agents or the schedule loop. The per-agent
@@ -2829,12 +2879,16 @@ def create_custom_agent(data: CustomAgentCreate):
         "budget_usd": max(0.0, float(data.budget_usd or 0)),
         "budget_period": data.budget_period if data.budget_period in budgets.PERIODS else "day",
         "heartbeat_seconds": agent_tasks.normalize_heartbeat(data.heartbeat_seconds),
+        "always_awake": bool(data.always_awake),
         "created": now,
         "updated": now,
     }
     reg.setdefault("agents", []).append(agent)
     save_agents_registry(reg)
-    append_audit({"action": "agent_created", "agent_id": agent["id"], "provider": agent["provider"]})
+    # cost-evidence trail: an always-awake agent with no $ ceiling drains every
+    # tick with nothing capping spend — surface it so the operator has a record.
+    warn = {"warning": "always_awake_unbounded_budget"} if agent["always_awake"] and not agent["budget_usd"] else {}
+    append_audit({"action": "agent_created", "agent_id": agent["id"], "provider": agent["provider"], **warn})
     return agent
 
 
@@ -2866,9 +2920,12 @@ def update_custom_agent(agent_id: str, data: CustomAgentUpdate):
                 a["budget_period"] = data.budget_period
             if data.heartbeat_seconds is not None:
                 a["heartbeat_seconds"] = agent_tasks.normalize_heartbeat(data.heartbeat_seconds)
+            if data.always_awake is not None:
+                a["always_awake"] = bool(data.always_awake)
             a["updated"] = get_timestamp()
             save_agents_registry(reg)
-            append_audit({"action": "agent_updated", "agent_id": agent_id})
+            warn = {"warning": "always_awake_unbounded_budget"} if a.get("always_awake") and not a.get("budget_usd") else {}
+            append_audit({"action": "agent_updated", "agent_id": agent_id, **warn})
             return a
     raise HTTPException(404, "Agent not found")
 
@@ -3712,69 +3769,104 @@ def inbox_count():
                          if i.get("status") == "waiting")}
 
 
-@app.post("/api/inbox/{item_id}/reply")
-def reply_inbox(item_id: str, data: InboxReply):
-    """Close the loop: the user's answer is re-dispatched to the same agent
-    together with the original context; the item is marked answered."""
-    if not data.message.strip():
-        raise HTTPException(400, "message is required")
-    box = load_inbox()
-    item = next((i for i in box.get("items", []) if i.get("id") == item_id), None)
-    if not item:
-        raise HTTPException(404, "Inbox item not found")
-    if item.get("status") != "waiting":
-        raise HTTPException(400, "Item is already answered")
-    agent = get_agent_by_id(item.get("agent_id"))
-    if not agent:
-        raise HTTPException(400, f"agent '{item.get('agent_id')}' no longer exists")
-    followup = (f"Earlier you were asked:\n{item.get('message', '')}\n\n"
-                f"You replied and asked the human:\n{item.get('question', '')}\n\n"
-                f"The human's answer is:\n{data.message.strip()}\n\n"
-                f"Continue the task with this information.")
-    # The follow-up must run in the SAME workspace as the original task —
-    # dropping workdir here silently revoked edit permissions, so an agent
-    # blocked on a permission question got denied again on every reply.
-    memory_dir, workdir = None, None
-    if item.get("project_id"):
-        proj = get_project_by_id(item["project_id"])
-        if proj:
-            memory_dir = project_memory_dir(proj)
-            pp = (proj.get("path") or "").strip()
-            if pp and Path(pp).expanduser().is_dir():
-                workdir = str(Path(pp).expanduser())
-    result = execute_profile(agent, followup, memory_dir=memory_dir, workdir=workdir)
-    item["status"] = "answered"
-    item["reply"] = data.message.strip()
-    item["followup_result"] = result
-    item["answered"] = get_timestamp()
-    save_inbox(box)
-    # a follow-up may itself need input again (keep the task linkage alive)
-    scan_for_needs_input(agent, followup, result,
-                         source=item.get("source", "task"), project_id=item.get("project_id"),
-                         task_id=item.get("task_id"))
-    # settle the linked queue task (and its Kanban mirror): the answer either
-    # completes it, fails it, or it legitimately re-asks and stays blocked
+def _run_inbox_followup(item: dict, agent: dict, followup: str, memory_dir, workdir):
+    """Background re-dispatch of an answered inbox item. An LLM run takes
+    minutes, so this NEVER blocks the reply request — it runs on its own daemon
+    thread and settles the item, the linked task + Kanban mirror, any further
+    delegations, and re-parks a new inbox item if the agent asks again."""
+    run_ok = True
+    try:
+        result = execute_profile(agent, followup, memory_dir=memory_dir, workdir=workdir)
+    except Exception as e:
+        run_ok = False
+        result = f"follow-up run failed: {e}"
+    # persist the follow-up output back onto the (already-answered) item, under
+    # the inbox lock — a heartbeat-drain append must not race this write.
+    with jsonstore.lock_for(INBOX_FILE):
+        box = load_inbox()
+        it = next((i for i in box.get("items", []) if i.get("id") == item["id"]), None)
+        if it is not None:
+            it["followup_result"] = result
+            save_inbox(box)
+    # only a SUCCESSFUL run may re-park or delegate — never re-act on a crash string
+    if run_ok:
+        scan_for_needs_input(agent, followup, result, source=item.get("source", "task"),
+                             project_id=item.get("project_id"), task_id=item.get("task_id"))
+        if item.get("project_id"):
+            scan_for_delegations(agent, result, item.get("project_id"), item.get("task_id"))
+    # settle the linked queue task + its Kanban mirror — a crashed run FAILS the
+    # task; it is never silently recorded as 'done'.
     if item.get("task_id"):
-        status = _classify_result(result)
+        status = "failed" if not run_ok else _classify_result(result)
         updated = agent_tasks.set_status(AGENT_TASKS_FILE, item["task_id"], status, result=result)
         if updated:
             _mirror_kanban(updated)
     if item.get("project_id"):
-        append_project_chat(item["project_id"], "user", data.message.strip(), agent_id=None)
         append_project_chat(item["project_id"], "assistant", result, agent_id=agent["id"])
+    append_audit({"action": "inbox_followup_done" if run_ok else "inbox_followup_failed",
+                  "id": item["id"], "agent_id": agent["id"]})
+
+
+@app.post("/api/inbox/{item_id}/reply")
+def reply_inbox(item_id: str, data: InboxReply):
+    """Close the loop: the answer re-dispatches the same agent with the original
+    context. The agent run happens in the BACKGROUND (it can take minutes), so
+    this returns immediately — the item leaves the waiting queue and the result
+    lands on the linked task/Kanban as it completes."""
+    if not data.message.strip():
+        raise HTTPException(400, "message is required")
+    # Claim + close the item atomically under the inbox lock, so a concurrent
+    # reply/dismiss or a heartbeat-drain append can't race the answered-write.
+    with jsonstore.lock_for(INBOX_FILE):
+        box = load_inbox()
+        item = next((i for i in box.get("items", []) if i.get("id") == item_id), None)
+        if not item:
+            raise HTTPException(404, "Inbox item not found")
+        if item.get("status") != "waiting":
+            raise HTTPException(400, "Item is already answered")
+        agent = get_agent_by_id(item.get("agent_id"))
+        if not agent:
+            raise HTTPException(400, f"agent '{item.get('agent_id')}' no longer exists")
+        followup = (f"Earlier you were asked:\n{item.get('message', '')}\n\n"
+                    f"You replied and asked the human:\n{item.get('question', '')}\n\n"
+                    f"The human's answer is:\n{data.message.strip()}\n\n"
+                    f"Continue the task with this information.")
+        # The follow-up must run in the SAME workspace as the original task —
+        # dropping workdir here silently revoked edit permissions, so an agent
+        # blocked on a permission question got denied again on every reply.
+        memory_dir, workdir = None, None
+        if item.get("project_id"):
+            proj = get_project_by_id(item["project_id"])
+            if proj:
+                memory_dir = project_memory_dir(proj)
+                pp = (proj.get("path") or "").strip()
+                if pp and Path(pp).expanduser().is_dir():
+                    workdir = str(Path(pp).expanduser())
+        # close the loop NOW so the item leaves the waiting queue; the agent runs async.
+        item["status"] = "answered"
+        item["reply"] = data.message.strip()
+        item["answered"] = get_timestamp()
+        save_inbox(box)
+        item_snapshot = dict(item)   # read-only context for the background thread
+    if item_snapshot.get("project_id"):
+        append_project_chat(item_snapshot["project_id"], "user", data.message.strip(), agent_id=None)
+    threading.Thread(target=_run_inbox_followup,
+                     args=(item_snapshot, agent, followup, memory_dir, workdir),
+                     daemon=True).start()
     append_audit({"action": "inbox_replied", "id": item_id, "agent_id": agent["id"]})
-    return {"status": "answered", "result": result}
+    return {"status": "dispatched", "agent": {"id": agent["id"], "name": agent.get("name")}}
 
 
 @app.delete("/api/inbox/{item_id}")
 def dismiss_inbox(item_id: str):
-    box = load_inbox()
-    items = box.get("items", [])
-    new_items = [i for i in items if i.get("id") != item_id]
-    if len(new_items) == len(items):
-        raise HTTPException(404, "Inbox item not found")
-    box["items"] = new_items
-    save_inbox(box)
+    with jsonstore.lock_for(INBOX_FILE):
+        box = load_inbox()
+        items = box.get("items", [])
+        new_items = [i for i in items if i.get("id") != item_id]
+        if len(new_items) == len(items):
+            raise HTTPException(404, "Inbox item not found")
+        box["items"] = new_items
+        save_inbox(box)
     append_audit({"action": "inbox_dismissed", "id": item_id})
     return {"status": "dismissed", "id": item_id}
 
