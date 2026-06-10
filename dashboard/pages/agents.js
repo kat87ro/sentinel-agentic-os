@@ -16,6 +16,18 @@ let _agentsCache = [];
 let _mcpServersCache = [];
 let _providersCache = [];   // live registry (built-ins + customs) from /api/providers
 let _agentUsage = {};       // per-agent spend in its budget window
+let _providerModels = {};   // provider -> model id list (curated or live-discovered)
+
+async function fetchProviderModels(provider) {
+  if (_providerModels[provider] !== undefined) return _providerModels[provider];
+  try {
+    const r = await api.getProviderModels(provider);
+    _providerModels[provider] = r.models || [];
+  } catch {
+    _providerModels[provider] = [];   // discovery failed → custom input only
+  }
+  return _providerModels[provider];
+}
 
 function providerMeta(id) {
   const builtin = AGENT_PROVIDERS.find(p => p.id === id);
@@ -120,7 +132,10 @@ function showAgentModal(agentId) {
       </div>
       <div class="form-group">
         <label class="form-label">Model</label>
-        <input class="form-input" id="agentModel" placeholder="model id" value="${a ? escapeHtml(a.model || '') : ''}">
+        <select class="form-select" id="agentModelSelect" onchange="onAgentModelSelectChange()">
+          <option value="">(provider default)</option>
+        </select>
+        <input class="form-input" id="agentModel" style="margin-top:8px;display:none" placeholder="model id" value="${a ? escapeHtml(a.model || '') : ''}">
       </div>
     </div>
     <div class="form-group">
@@ -170,10 +185,50 @@ function showAgentModal(agentId) {
   onAgentProviderChange();
 }
 
-function onAgentProviderChange() {
+const AGENT_MODEL_CUSTOM = '__custom__';
+
+async function onAgentProviderChange() {
   const sel = document.getElementById('agentProvider');
+  const modelSel = document.getElementById('agentModelSelect');
   const model = document.getElementById('agentModel');
-  if (sel && model) model.placeholder = providerMeta(sel.value).placeholder;
+  if (!sel || !modelSel || !model) return;
+  model.placeholder = providerMeta(sel.value).placeholder;
+  const current = model.value.trim();
+  const provider = sel.value;
+  const models = await fetchProviderModels(provider);
+  // NOT a tautology: sel.value is re-read from the live DOM after the await —
+  // if the user switched provider mid-fetch, this aborts the stale population.
+  if (sel.value !== provider) return;
+  const opts = ['<option value="">(provider default)</option>']
+    .concat(models.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`));
+  opts.push(`<option value="${AGENT_MODEL_CUSTOM}">Custom…</option>`);
+  modelSel.innerHTML = opts.join('');
+  modelSel.dataset.populated = '1';
+  if (current && models.includes(current)) modelSel.value = current;
+  else if (current) modelSel.value = AGENT_MODEL_CUSTOM;
+  else modelSel.value = '';
+  onAgentModelSelectChange();
+}
+
+function onAgentModelSelectChange() {
+  const modelSel = document.getElementById('agentModelSelect');
+  const model = document.getElementById('agentModel');
+  if (!modelSel || !model) return;
+  const custom = modelSel.value === AGENT_MODEL_CUSTOM;
+  model.style.display = custom ? '' : 'none';
+  if (custom) model.focus();
+}
+
+function selectedAgentModel() {
+  const modelSel = document.getElementById('agentModelSelect');
+  const model = document.getElementById('agentModel');
+  if (!modelSel) return (model ? model.value.trim() : '');
+  if (modelSel.value === AGENT_MODEL_CUSTOM) return (model ? model.value.trim() : '');
+  // Save clicked before the option fetch resolved: the select only has the
+  // static "(provider default)" option, but the hidden input still carries the
+  // agent's saved model — trust it so a fast Save never blanks the model.
+  if (!modelSel.dataset.populated) return (model ? model.value.trim() : '');
+  return modelSel.value;
 }
 
 function collectAgentSkills() {
@@ -190,7 +245,7 @@ async function saveAgent(agentId) {
   const payload = {
     name,
     provider: document.getElementById('agentProvider').value,
-    model: document.getElementById('agentModel').value.trim(),
+    model: selectedAgentModel(),
     system_prompt: document.getElementById('agentPrompt').value,
     skills: collectAgentSkills(),
     mcp_servers,

@@ -513,6 +513,20 @@ INBOX_FILE = BASE_DIR / "data" / "inbox.json"
 PROJECTS_FILE = BASE_DIR / "data" / "projects.json"
 PROJECT_CHATS_DIR = BASE_DIR / "data" / "project_chats"
 TEAMS_FILE = BASE_DIR / "data" / "teams.json"
+# Per-agent interim-files workspace: agents always get edit permission here
+# (plus the project folder when the task has one) — headless CLI runs cannot
+# prompt for permission, so without a writable dir every edit is denied and
+# the task lands in "blocked".
+AGENT_WORKSPACE_DIR = BASE_DIR / "data" / "workspace"
+
+
+def agent_workspace_dir(agent: dict) -> Path:
+    aid = (agent or {}).get("id") or "shared"
+    # path-safety: agent ids are slugs, but never trust them as path segments
+    aid = "".join(c for c in aid if c.isalnum() or c in "-_") or "shared"
+    d = AGENT_WORKSPACE_DIR / aid
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 # Default profiles seeded once so the existing 3-agent UI (chat, health,
 # router) keeps working and the new Agents page is populated out of the box.
@@ -1712,7 +1726,7 @@ def clean_hermes_output(raw: str) -> str:
 
 def execute_claude(message: str, model: str = "", system_prompt: str = "", timeout: int = 300,
                    mcp_config_path: str = None, workdir: str = None,
-                   allowed_mcp_tools: list = None) -> str:
+                   allowed_mcp_tools: list = None, extra_dirs: list = None) -> str:
     """Claude provider via the `claude` CLI (print mode), mirroring the gemini
     path. Works with a subscription login (`claude login`) or an exported
     ANTHROPIC_API_KEY — both inherited by the child process. Model is injected
@@ -1732,12 +1746,17 @@ def execute_claude(message: str, model: str = "", system_prompt: str = "", timeo
             # pre-approve the attached servers' tools — the operator explicitly
             # attached these, so their tools are trusted for this agent
             args += ["--allowedTools", ",".join(allowed_mcp_tools)]
-    if workdir:
-        # project workspace: run inside the folder and auto-accept file edits
-        # there (acceptEdits — never the dangerous full-skip mode)
-        args += ["--permission-mode", "acceptEdits", "--add-dir", workdir]
+    # Edit permissions: headless -p mode can never prompt (unapproved tools are
+    # silently denied), so file edits are auto-accepted (acceptEdits — never the
+    # dangerous full-skip mode) inside the granted dirs only: the project folder
+    # (workdir) plus the agent's interim-files workspace (extra_dirs).
+    dirs = list(dict.fromkeys(d for d in [workdir, *(extra_dirs or [])] if d))
+    if dirs:
+        args += ["--permission-mode", "acceptEdits"]
+        for d in dirs:
+            args += ["--add-dir", d]
     try:
-        code, out, err = run_cli(args, timeout=timeout, cwd=workdir)
+        code, out, err = run_cli(args, timeout=timeout, cwd=workdir or (dirs[0] if dirs else None))
     except subprocess.TimeoutExpired:
         return (f"⏱ Claude timed out.\n\nTry `claude -p \"{message[:60]}\"` directly.\n\n"
                 f"**Message:** {message[:100]}")
@@ -1806,16 +1825,22 @@ def execute_custom_cli(template: str, message: str, model: str = "", timeout: in
 
 def execute_agent(agent: str, message: str, model: str = "", system_prompt: str = "",
                   mcp_config_path: str = None, workdir: str = None,
-                  allowed_mcp_tools: list = None) -> str:
+                  allowed_mcp_tools: list = None, extra_dirs: list = None) -> str:
     # Persona is prepended to the message for CLIs without a system-prompt flag.
     full = (system_prompt.strip() + "\n\n" + message) if system_prompt else message
     try:
         if agent == "claude":
             return execute_claude(message, model, system_prompt, mcp_config_path=mcp_config_path,
-                                  workdir=workdir, allowed_mcp_tools=allowed_mcp_tools)
+                                  workdir=workdir, allowed_mcp_tools=allowed_mcp_tools,
+                                  extra_dirs=extra_dirs)
 
         if agent == "codex":
-            return execute_codex(message, model, system_prompt, workdir=workdir)
+            # codex's sandbox takes a single root: project folder, else the
+            # agent workspace so non-project tasks still have a writable dir.
+            # (Asymmetry vs claude: a project-task codex run cannot also write
+            # to the interim workspace — one-root limit of workspace-write.)
+            return execute_codex(message, model, system_prompt,
+                                 workdir=workdir or ((extra_dirs or [None])[0]))
 
         if agent == "opencode":
             try:
@@ -1918,6 +1943,16 @@ NEEDS_INPUT_INSTRUCTION = (
     "you are not blocked on the human.")
 
 
+def _classify_result(result: str) -> str:
+    """Map a provider reply onto a task status (shared by the heartbeat drain
+    and the inbox-reply follow-up so both classify identically)."""
+    if "Budget limit reached" in result or result.lstrip().startswith(("⏱", "⚠")):
+        return "failed"
+    if NEEDS_INPUT_MARKER in result:
+        return "needs_input"
+    return "done"
+
+
 def load_inbox() -> dict:
     return jsonstore.read_json(INBOX_FILE, {"items": []})
 
@@ -1927,9 +1962,12 @@ def save_inbox(data: dict):
 
 
 def scan_for_needs_input(agent: dict, message: str, result: str,
-                         source: str = "task", project_id: str = None):
+                         source: str = "task", project_id: str = None,
+                         task_id: str = None):
     """If the agent's reply contains [NEEDS_INPUT], file an inbox item. The
-    item carries enough context to re-dispatch the conversation on reply."""
+    item carries enough context to re-dispatch the conversation on reply;
+    ``task_id`` links it back to the blocked queue task so the reply can
+    settle that task instead of leaving it in needs_input forever."""
     if not result or NEEDS_INPUT_MARKER not in result:
         return None
     question = result.split(NEEDS_INPUT_MARKER, 1)[1].strip().splitlines()
@@ -1943,6 +1981,7 @@ def scan_for_needs_input(agent: dict, message: str, result: str,
         "result": result,
         "source": source,
         "project_id": project_id,
+        "task_id": task_id,
         "status": "waiting",
         "created": get_timestamp(),
     }
@@ -2234,14 +2273,11 @@ def process_agent_queue(agent_id: str) -> list:
         _exec_ctx.set({"kind": "task", "agent_id": agent_id, "task_id": t["id"],
                        "label": t.get("title") or t["message"][:60]})
         result = execute_profile(scoped, t["message"], memory_dir=memory_dir, workdir=workdir)
-        if "Budget limit reached" in result or result.lstrip().startswith(("⏱", "⚠")):
-            status = "failed"
-        elif NEEDS_INPUT_MARKER in result:
-            status = "needs_input"
+        status = _classify_result(result)
+        if status == "needs_input":
             scan_for_needs_input(agent, t["message"], result,
-                                 source="heartbeat", project_id=t.get("project_id"))
-        else:
-            status = "done"
+                                 source="heartbeat", project_id=t.get("project_id"),
+                                 task_id=t["id"])
         delegated = scan_for_delegations(agent, result, t.get("project_id"), t["id"])
         updated = agent_tasks.set_status(AGENT_TASKS_FILE, t["id"], status, result=result)
         if updated:
@@ -2358,8 +2394,12 @@ def execute_profile(agent: dict, message: str, memory_dir: Path = None,
         _exec_ctx.set({"kind": "agent", "agent_id": (agent or {}).get("id"),
                        "label": message[:60]})
     model = (agent or {}).get("model", "") or cfg.get("default_model", "") or ""
+    # Every agent run gets edit permission in its own interim-files workspace
+    # (data/workspace/<agent_id>) in addition to the project folder — without
+    # this, non-project tasks have nowhere writable and block on every edit.
+    workspace = str(agent_workspace_dir(agent))
     result = _dispatch_to_provider(provider, cfg, agent, message, model, system_prompt,
-                                   workdir=workdir)
+                                   workdir=workdir, extra_dirs=[workspace])
 
     # Meter usage (estimates — guardrail, not accounting).
     try:
@@ -2373,7 +2413,8 @@ def execute_profile(agent: dict, message: str, memory_dir: Path = None,
 
 
 def _dispatch_to_provider(provider: str, cfg: dict, agent: dict, message: str,
-                          model: str, system_prompt: str, workdir: str = None) -> str:
+                          model: str, system_prompt: str, workdir: str = None,
+                          extra_dirs: list = None) -> str:
     # Custom provider — token (api) or CLI-template mode.
     if cfg.get("custom"):
         if cfg.get("mode") == "cli":
@@ -2400,7 +2441,7 @@ def _dispatch_to_provider(provider: str, cfg: dict, agent: dict, message: str,
     try:
         return execute_agent(provider, message, model=model, system_prompt=system_prompt,
                              mcp_config_path=mcp_path, workdir=workdir,
-                             allowed_mcp_tools=allowed_mcp)
+                             allowed_mcp_tools=allowed_mcp, extra_dirs=extra_dirs)
     finally:
         if mcp_path:
             try:
@@ -3101,6 +3142,63 @@ created: {now}
     return project
 
 
+@app.post("/api/projects/{project_id}/start")
+def start_project_with_team(project_id: str):
+    """Kick off the assigned team on the project's goal.
+
+    Project creation is declarative — nothing runs until this is called. This
+    queues ONE delegation task to the team Lead, who (on the next heartbeats)
+    decomposes the goal and hands subtasks to members via the [DELEGATE: <member>]
+    protocol the runtime injects into the Lead's prompt. Kept as an EXPLICIT
+    action — never auto-fired on project creation — so autonomous, token-spending
+    work is a deliberate click, not a side effect."""
+    project = get_project_by_id(project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    goal = (project.get("goal") or "").strip()
+    if not goal:
+        raise HTTPException(400, "Project has no goal yet — set one before starting the team")
+    team = get_team_by_id(project.get("team_id", ""))
+    if not team:
+        raise HTTPException(400, "Project has no team assigned — assign a team first")
+    lead = get_agent_by_id(team.get("manager_id", ""))
+    if not lead:
+        raise HTTPException(400, "Team has no valid Lead/manager agent")
+    # Don't double-dispatch: refuse if the team already has live work on this project.
+    open_tasks = [t for t in agent_tasks.tasks_for(AGENT_TASKS_FILE, project_id=project_id)
+                  if t.get("status") in ("queued", "running", "needs_input")]
+    if open_tasks:
+        raise HTTPException(409, f"Team already has {len(open_tasks)} open task(s) on this "
+                                 f"project — let them finish or clear them before restarting.")
+    _, members = _team_for_lead(lead["id"], project_id)
+    roster = "; ".join(f"{m['name']} ({m.get('role', 'Member')})" for m in members) \
+             or "(no team members — handle the work yourself)"
+    pp = (project.get("path") or "").strip()
+    where = (f"Build all deliverables in the project folder: {pp}" if pp
+             else "No project folder is set — ask the operator where files should go if needed.")
+    msg = (f"You are the Lead of team “{team.get('name')}” on project “{project.get('name')}”.\n\n"
+           f"PROJECT GOAL:\n{goal}\n\n"
+           f"{where}\n\n"
+           f"Break the goal into concrete subtasks and DELEGATE each to the right teammate "
+           f"using the delegation protocol (one [DELEGATE: <member>] line per subtask). "
+           f"Your team: {roster}. Do the parts that are yours and delegate the rest — don't "
+           f"do a teammate's work for them. If a human decision is required, end with "
+           f"[NEEDS_INPUT] <question>.")
+    task = queue_agent_task(lead, f"Kick off: {project.get('name')}", msg,
+                            project_id=project_id, created_by="project-kickoff")
+    append_audit({"action": "project_kickoff_dispatched", "project_id": project_id,
+                  "task_id": task["id"], "lead": lead["id"]})
+    # Wake the Lead NOW in a background thread (an LLM run takes minutes and must
+    # never hang the request). Without this the task would only fire on the
+    # Lead's next heartbeat — and never at all for a manual-wake Lead
+    # (heartbeat_seconds == 0), which is exactly the "I clicked Start and nothing
+    # happened" trap this feature exists to remove.
+    threading.Thread(target=_safe_process_queue, args=(lead["id"],), daemon=True).start()
+    return {"ok": True, "task_id": task["id"], "team": team.get("name"),
+            "lead": {"id": lead["id"], "name": lead.get("name")},
+            "members": len(members), "woke": True}
+
+
 @app.put("/api/projects/{project_id}")
 def update_project(project_id: str, data: ProjectUpdate):
     _validate_project_fields((data.path or "").strip() or None, (data.team_id or "").strip() or None)
@@ -3633,20 +3731,34 @@ def reply_inbox(item_id: str, data: InboxReply):
                 f"You replied and asked the human:\n{item.get('question', '')}\n\n"
                 f"The human's answer is:\n{data.message.strip()}\n\n"
                 f"Continue the task with this information.")
-    memory_dir = None
+    # The follow-up must run in the SAME workspace as the original task —
+    # dropping workdir here silently revoked edit permissions, so an agent
+    # blocked on a permission question got denied again on every reply.
+    memory_dir, workdir = None, None
     if item.get("project_id"):
         proj = get_project_by_id(item["project_id"])
         if proj:
             memory_dir = project_memory_dir(proj)
-    result = execute_profile(agent, followup, memory_dir=memory_dir)
+            pp = (proj.get("path") or "").strip()
+            if pp and Path(pp).expanduser().is_dir():
+                workdir = str(Path(pp).expanduser())
+    result = execute_profile(agent, followup, memory_dir=memory_dir, workdir=workdir)
     item["status"] = "answered"
     item["reply"] = data.message.strip()
     item["followup_result"] = result
     item["answered"] = get_timestamp()
     save_inbox(box)
-    # a follow-up may itself need input again
+    # a follow-up may itself need input again (keep the task linkage alive)
     scan_for_needs_input(agent, followup, result,
-                         source=item.get("source", "task"), project_id=item.get("project_id"))
+                         source=item.get("source", "task"), project_id=item.get("project_id"),
+                         task_id=item.get("task_id"))
+    # settle the linked queue task (and its Kanban mirror): the answer either
+    # completes it, fails it, or it legitimately re-asks and stays blocked
+    if item.get("task_id"):
+        status = _classify_result(result)
+        updated = agent_tasks.set_status(AGENT_TASKS_FILE, item["task_id"], status, result=result)
+        if updated:
+            _mirror_kanban(updated)
     if item.get("project_id"):
         append_project_chat(item["project_id"], "user", data.message.strip(), agent_id=None)
         append_project_chat(item["project_id"], "assistant", result, agent_id=agent["id"])
@@ -3834,22 +3946,29 @@ def set_provider_secret(name: str, data: ProviderSecretSet):
 
 @app.get("/api/providers/{name}/models")
 def provider_models(name: str):
-    """Model discovery: list what the provider's endpoint actually serves.
-    For a local Ollama this is the set of INSTALLED models (GET /v1/models),
-    so the operator picks from reality instead of typing names blind. Only
-    openai-format custom providers — others answer honestly with 400."""
-    if name not in custom_provider_records():
-        raise HTTPException(404, "Unknown custom provider")
-    cfg = get_provider_config(name)
-    key = resolve_provider_key(cfg) or ("not-required" if cfg.get("key_optional") else "")
-    try:
-        models = providers.list_models(cfg.get("api_format", "openai"),
-                                       cfg.get("base_url", ""), key)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(502, f"could not reach {cfg.get('base_url', '(no url)')}: {str(e)[:200]}")
-    return {"name": name, "models": models, "count": len(models)}
+    """Model discovery for the Agents-page model dropdown. Two sources:
+    custom openai-format providers are queried LIVE (GET /v1/models — for a
+    local Ollama that's the set of INSTALLED models, so the operator picks
+    from reality instead of typing names blind); built-in CLI providers have
+    no discovery endpoint, so they serve the curated KNOWN_MODELS list with
+    the configured default first."""
+    if name in custom_provider_records():
+        cfg = get_provider_config(name)
+        key = resolve_provider_key(cfg) or ("not-required" if cfg.get("key_optional") else "")
+        try:
+            models = providers.list_models(cfg.get("api_format", "openai"),
+                                           cfg.get("base_url", ""), key)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(502, f"could not reach {cfg.get('base_url', '(no url)')}: {str(e)[:200]}")
+        return {"name": name, "models": models, "count": len(models), "source": "live"}
+    if name in providers.KNOWN_MODELS:
+        cfg = get_provider_config(name)
+        default = (cfg.get("default_model") or "").strip()
+        models = list(dict.fromkeys(([default] if default else []) + providers.KNOWN_MODELS[name]))
+        return {"name": name, "models": models, "count": len(models), "source": "curated"}
+    raise HTTPException(404, "Unknown provider")
 
 
 @app.post("/api/providers/{name}/test")

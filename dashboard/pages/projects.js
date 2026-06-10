@@ -53,6 +53,7 @@ async function renderProjects() {
           ${p.path ? `<div class="mono text-xs truncate" style="color:var(--text-faint)">${escapeHtml(p.path)}</div>` : ''}
           <div style="display:flex;gap:8px;margin-top:12px;padding-top:10px;border-top:1px solid var(--border-soft)">
             <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();openProject('${p.id}')">${icon('message', 13)} Open chat</button>
+            ${p.goal && p.team_id ? `<button class="btn btn-sm btn-ghost" title="Start the team on this goal" onclick="event.stopPropagation();startProjectUI('${p.id}')">${icon('play', 13)} Start</button>` : ''}
             <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation();showProjectModal('${p.id}')">${icon('pencil', 13)}</button>
             <button class="btn btn-sm btn-ghost" style="margin-left:auto;color:var(--crit)" onclick="event.stopPropagation();deleteProjectUI('${p.id}')">${icon('trash', 13)}</button>
           </div>
@@ -176,7 +177,8 @@ async function openProject(projectId) {
         </div>
       </div>
       ${memberIds.length ? `
-      <button class="btn btn-primary" style="margin-left:auto" onclick="showAssignTaskModal()">${icon('zap', 13)} Assign task</button>
+      <button class="btn btn-primary" style="margin-left:auto" onclick="startProjectUI('${_activeProject.id}')" title="Dispatch the goal to the team Lead, who decomposes it and delegates to the team">${icon('play', 13)} Start with team</button>
+      <button class="btn btn-ghost" onclick="showAssignTaskModal()">${icon('zap', 13)} Assign task</button>
       <select class="form-select" id="prjChatAgent" style="width:220px">
         <option value="">${escapeHtml(team.name)} manager (default)</option>
         ${memberIds.map(id => `<option value="${id}">${escapeHtml(projectAgentName(id))}</option>`).join('')}
@@ -324,6 +326,21 @@ async function assignTaskUI() {
     loadProjectChat();
   } catch (err) {
     out.innerHTML = `<div style="color:var(--crit);font-size:12.5px;margin-top:8px">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function startProjectUI(projectId) {
+  if (!confirm('Start the team on this project?\n\nThe team Lead will be woken to '
+      + 'decompose the goal and delegate to the team — this runs autonomous agents '
+      + 'and may consume provider tokens. Continue?')) return;
+  try {
+    const r = await api.startProject(projectId);
+    showToast(`Dispatched to ${r.lead?.name || 'the Lead'} — decomposing & delegating on the next heartbeat`, 'success');
+    loadProjectTasks();          // the kickoff task appears in the project's queue panel
+    setTimeout(loadProjectTasks, 4000);   // refresh once more as the Lead starts delegating
+  } catch (err) {
+    // 409 = team already has open work on this project; surface it plainly.
+    showToast('Could not start: ' + err.message, 'error');
   }
 }
 

@@ -134,6 +134,7 @@ const api = {
   deleteProject: (id) => api.del(`/api/projects/${encodeURIComponent(id)}`),
   getProjectChat: (id) => api.get(`/api/projects/${encodeURIComponent(id)}/chat`),
   sendProjectChat: (id, message, agentId) => api.post(`/api/projects/${encodeURIComponent(id)}/chat`, { message, agent_id: agentId || null }),
+  startProject: (id) => api.post(`/api/projects/${encodeURIComponent(id)}/start`, {}),
   // Agent task queue + heartbeat runtime
   getAgentTasks: (params = '') => api.get('/api/agent-tasks' + (params ? '?' + params : '')),
   createAgentTask: (data) => api.post('/api/agent-tasks', data),

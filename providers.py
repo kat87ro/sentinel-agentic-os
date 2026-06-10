@@ -55,6 +55,34 @@ PROVIDER_CATALOG = [
      "key_ref": "env:XAI_API_KEY"},
 ]
 
+# Curated model lists for the built-in CLI providers (no discovery endpoint to
+# query, unlike openai-format customs). Drives the model dropdown on the Agents
+# page — the UI always keeps a free-text escape hatch, so a stale list is an
+# inconvenience, not a blocker. Claude IDs are current aliases as of 2026-06
+# (aliases are complete as-is; never append date suffixes).
+KNOWN_MODELS = {
+    "claude": [
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+    ],
+    "gemini": [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    ],
+    "codex": [
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-mini",
+        "gpt-5.1",
+    ],
+    "opencode": [],
+    "hermes": [],
+}
+
 # Default per-provider config; merged over by settings.json -> providers.
 DEFAULT_PROVIDER_CONFIG = {
     "claude":   {"mode": "cli", "default_model": "claude-sonnet-4-6", "key_ref": "env:ANTHROPIC_API_KEY"},
